@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contract Comparison AI - Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- App Container -->
+    <div class="app-container">
+        
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="9" y1="15" x2="15" y2="15"></line>
+                    <line x1="9" y1="19" x2="13" y2="19"></line>
+                </svg>
+                <div class="logo-text">
+                    <h1>ContractAI</h1>
+                    <span>Comparison & Audit Dashboard</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="toggle-history-btn" class="btn btn-secondary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    History
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <main class="main-content">
+            
+            <!-- Upload Panel -->
+            <section id="upload-panel" class="panel active">
+                <div class="welcome-banner">
+                    <h2>Auditing Contracts Made Easy</h2>
+                    <p>Upload two versions of a contract to verify updates, grammar corrections, layout adjustments, and critical clause revisions powered by Gemini AI.</p>
+                </div>
+
+                <form id="compare-form" class="upload-grid">
+                    <!-- Dropzone Original -->
+                    <div class="dropzone-container">
+                        <h3>Original Contract</h3>
+                        <div id="dropzone-a" class="dropzone">
+                            <input type="file" id="file-a" name="file_a" accept=".docx,.pdf,.png,.jpg,.jpeg" required hidden>
+                            <div class="dropzone-prompt">
+                                <svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" stroke-width="1.5" fill="none" class="upload-svg">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="17 8 12 3 7 8"></polyline>
+                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                                </svg>
+                                <p class="primary-text">Drag & drop your file here</p>
+                                <p class="secondary-text">or <span class="browse-link">browse computer</span></p>
+                                <p class="supported-formats">Supported: PDF, DOCX, Images</p>
+                            </div>
+                            <div class="file-details hidden">
+                                <div class="file-icon-box"></div>
+                                <div class="file-info">
+                                    <span class="file-name">filename.docx</span>
+                                    <span class="file-size">1.2 MB</span>
+                                </div>
+                                <button type="button" class="btn-clear" data-target="file-a">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dropzone Modified -->
+                    <div class="dropzone-container">
+                        <h3>Modified Contract</h3>
+                        <div id="dropzone-b" class="dropzone">
+                            <input type="file" id="file-b" name="file_b" accept=".docx,.pdf,.png,.jpg,.jpeg" required hidden>
+                            <div class="dropzone-prompt">
+                                <svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" stroke-width="1.5" fill="none" class="upload-svg">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="17 8 12 3 7 8"></polyline>
+                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                                </svg>
+                                <p class="primary-text">Drag & drop your file here</p>
+                                <p class="secondary-text">or <span class="browse-link">browse computer</span></p>
+                                <p class="supported-formats">Supported: PDF, DOCX, Images</p>
+                            </div>
+                            <div class="file-details hidden">
+                                <div class="file-icon-box"></div>
+                                <div class="file-info">
+                                    <span class="file-name">filename.docx</span>
+                                    <span class="file-size">1.2 MB</span>
+                                </div>
+                                <button type="button" class="btn-clear" data-target="file-b">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+
+                <div class="form-actions">
+                    <button type="button" id="compare-btn" class="btn btn-primary btn-large" disabled>
+                        Compare Contracts
+                    </button>
+                    <button type="button" id="demo-btn" class="btn btn-secondary btn-large">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" style="margin-right: 8px;">
+                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                        Try Demo Mode
+                    </button>
+                </div>
+            </section>
+
+            <!-- Results Panel -->
+            <section id="results-panel" class="panel">
+                <!-- Top Toolbar -->
+                <div class="results-toolbar">
+                    <button id="back-to-upload-btn" class="btn btn-secondary">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                        </svg>
+                        Back
+                    </button>
+                    <div class="report-buttons">
+                        <button id="download-docx-btn" class="btn btn-action">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                            Download Word Report
+                        </button>
+                        <button id="download-pdf-btn" class="btn btn-action">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                            Download PDF Report
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Summary Dashboard -->
+                <div class="summary-dashboard">
+                    <div class="verdict-card">
+                        <div class="card-badge">Executive Verdict</div>
+                        <p id="dashboard-verdict" class="verdict-text">Verifying documents...</p>
+                        <div class="filenames-footer">
+                            <span id="label-file-a">Original: -</span>
+                            <span class="separator">|</span>
+                            <span id="label-file-b">Modified: -</span>
+                        </div>
+                    </div>
+
+                    <!-- Stats Cards -->
+                    <div class="stats-container">
+                        <div class="stat-card" data-category="Textual">
+                            <span class="stat-num" id="stat-textual">0</span>
+                            <span class="stat-label">Textual Changes</span>
+                        </div>
+                        <div class="stat-card" data-category="Grammar">
+                            <span class="stat-num" id="stat-grammar">0</span>
+                            <span class="stat-label">Grammar Fixes</span>
+                        </div>
+                        <div class="stat-card" data-category="Formatting">
+                            <span class="stat-num" id="stat-formatting">0</span>
+                            <span class="stat-label">Formatting Changes</span>
+                        </div>
+                        <div class="stat-card" data-category="Dates">
+                            <span class="stat-num" id="stat-dates">0</span>
+                            <span class="stat-label">Date Discrepancies</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabs & Container -->
+                <div class="results-workspace">
+                    <div class="tab-navbar">
+                        <button class="tab-btn active" data-tab="tab-diff">Side-by-Side Diff</button>
+                        <button class="tab-btn" data-tab="tab-changes">Changes Log</button>
+                    </div>
+
+                    <!-- Tab: Side-by-Side Diff -->
+                    <div id="tab-diff" class="tab-panel active">
+                        <div class="diff-container" id="diff-table-wrapper">
+                            <!-- difflib table will render here -->
+                        </div>
+                    </div>
+
+                    <!-- Tab: Changes Log -->
+                    <div id="tab-changes" class="tab-panel">
+                        <div class="filters-bar">
+                            <div class="filter-group">
+                                <label for="filter-category">Category:</label>
+                                <select id="filter-category">
+                                    <option value="All">All Categories</option>
+                                    <option value="Textual">Textual Changes</option>
+                                    <option value="Grammar">Grammar Changes</option>
+                                    <option value="Formatting">Formatting Changes</option>
+                                    <option value="Dates">Date References</option>
+                                    <option value="Visual">Visual Elements</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label for="filter-severity">Severity:</label>
+                                <select id="filter-severity">
+                                    <option value="All">All Severities</option>
+                                    <option value="High">High Severity</option>
+                                    <option value="Medium">Medium Severity</option>
+                                    <option value="Low">Low Severity</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="changes-list-container">
+                            <table class="changes-table">
+                                <thead>
+                                    <tr>
+                                        <th>Category</th>
+                                        <th>Severity</th>
+                                        <th>Section / Location</th>
+                                        <th>Description</th>
+                                        <th>Original Text</th>
+                                        <th>Modified Text</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="changes-table-body">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                            <div id="no-changes-msg" class="no-data-msg hidden">
+                                No differences found matching the filter criteria.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- History Drawer -->
+        <aside id="history-drawer" class="history-drawer">
+            <div class="drawer-header">
+                <h3>Comparison History</h3>
+                <button id="close-history-btn" class="btn-close">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="drawer-content" id="history-list">
+                <!-- Comparisons listed dynamically -->
+                <div class="no-history-msg">No historical runs saved.</div>
+            </div>
+        </aside>
+
+        <!-- Loading Scanner Overlay -->
+        <div id="loading-overlay" class="loading-overlay">
+            <div class="scanner-container">
+                <div class="scanner-screen">
+                    <div class="scanner-laser"></div>
+                    <svg class="scanner-doc-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="8" y1="13" x2="16" y2="13"></line>
+                        <line x1="8" y1="17" x2="16" y2="17"></line>
+                    </svg>
+                </div>
+                <div class="scanner-progress">
+                    <div class="spinner"></div>
+                    <span id="loading-status">Uploading files...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Global Toast Notifications -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
