@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import traceback
 
 from flask import (
@@ -246,6 +247,7 @@ def build_local_summary(
         )
 
         if category in category_counts:
+
             category_counts[category] += 1
 
     severity_high = len([
@@ -297,7 +299,8 @@ def build_local_summary(
 
     return {
 
-        "totalChanges": len(all_changes),
+        "totalChanges":
+            len(all_changes),
 
         "textualChanges":
             category_counts["Textual"],
@@ -326,6 +329,71 @@ def build_local_summary(
         "verdict":
             verdict
     }
+
+
+# ============================================================
+# AI VERDICT BUILDER
+# ============================================================
+
+def build_ai_verdict(
+    ai_text,
+    changes
+):
+
+    if not ai_text:
+
+        return ""
+
+    # Gemini is responsible for semantic,
+    # textual, grammar, date and visual analysis.
+    #
+    # Local comparison remains authoritative for
+    # directly verified document differences,
+    # especially DOCX formatting.
+
+    if not changes:
+
+        return (
+            "Gemini AI: "
+            + ai_text.strip()
+        )
+
+    cleaned = ai_text.strip()
+
+    # --------------------------------------------------------
+    # Prevent contradictory verdicts
+    # --------------------------------------------------------
+    #
+    # Example:
+    # Gemini says:
+    # "No changes were identified."
+    #
+    # But local comparison found:
+    # 5 formatting changes.
+    #
+    # We must not display a contradictory result.
+    # --------------------------------------------------------
+
+    no_change_pattern = re.compile(
+        r"\b(no|none|zero)\b"
+        r".{0,80}"
+        r"\b(changes?|differences?)\b",
+        re.IGNORECASE | re.DOTALL
+    )
+
+    if no_change_pattern.search(cleaned):
+
+        cleaned = (
+            "No textual or semantic changes "
+            "were identified by Gemini AI."
+        )
+
+    return (
+        "Gemini AI: "
+        + cleaned
+        + " Local document analysis confirmed "
+        + f"{len(changes)} detected change(s)."
+    )
 
 
 # ============================================================
@@ -617,16 +685,21 @@ def compare_contracts():
                         )
                     )
 
+                    # ------------------------------------------------
                     # Local formatting remains useful
                     # because Gemini text-only mode cannot
                     # reliably inspect DOCX run formatting.
+                    # ------------------------------------------------
+
                     changes = (
                         ai_changes
                         + formatting_changes
                     )
 
-                    # Recalculate summary directly
-                    # from the final change list.
+                    # ------------------------------------------------
+                    # Recalculate summary from final change list.
+                    # ------------------------------------------------
+
                     summary = build_local_summary(
                         [
                             c for c in changes
@@ -653,14 +726,91 @@ def compare_contracts():
                         )
                     )
 
-                    # Preserve stronger AI verdict
-                    if ai_summary.get(
-                        "verdict"
-                    ):
+                    # ------------------------------------------------
+                    # FIX:
+                    # Do NOT blindly replace the local verdict
+                    # with Gemini's verdict.
+                    #
+                    # Gemini may say "no changes" because it is
+                    # primarily analyzing text/semantics, while the
+                    # local engine has correctly detected formatting.
+                    # ------------------------------------------------
+
+                    ai_executive_summary = (
+                        ai_result.get(
+                            "executive_summary",
+                            ""
+                        )
+                    )
+
+                    ai_old_verdict = (
+                        ai_summary.get(
+                            "verdict",
+                            ""
+                        )
+                    )
+
+                    if ai_executive_summary:
 
                         summary["verdict"] = (
-                            ai_summary["verdict"]
+                            build_ai_verdict(
+                                ai_executive_summary,
+                                changes
+                            )
                         )
+
+                    elif ai_old_verdict:
+
+                        summary["verdict"] = (
+                            build_ai_verdict(
+                                ai_old_verdict,
+                                changes
+                            )
+                        )
+
+                    # ------------------------------------------------
+                    # Preserve AI severity when available.
+                    # ------------------------------------------------
+
+                    ai_overall_severity = (
+                        ai_result.get(
+                            "overall_severity",
+                            ""
+                        )
+                    )
+
+                    if not ai_overall_severity:
+
+                        ai_overall_severity = (
+                            ai_summary.get(
+                                "overallSeverity",
+                                ""
+                            )
+                        )
+
+                    if ai_overall_severity:
+
+                        severity_map = {
+                            "High": "High",
+                            "Medium": "Medium",
+                            "Low": "Low",
+                            "Critical": "High"
+                        }
+
+                        mapped_severity = (
+                            severity_map.get(
+                                str(
+                                    ai_overall_severity
+                                ).strip(),
+                                None
+                            )
+                        )
+
+                        if mapped_severity:
+
+                            summary[
+                                "overallSeverity"
+                            ] = mapped_severity
 
             except Exception as error:
 

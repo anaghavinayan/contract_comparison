@@ -2,18 +2,14 @@ import difflib
 import re
 
 
-# ============================================================
-# SIDE-BY-SIDE TEXT DIFF
-# ============================================================
-
 def generate_text_diff(lines_a, lines_b):
     """
-    Generate the HTML side-by-side difference view.
+    Generate a clean side-by-side HTML diff without HtmlDiff navigation links.
     """
 
     html_diff = difflib.HtmlDiff(tabsize=4)
 
-    return html_diff.make_table(
+    diff_table = html_diff.make_table(
         lines_a,
         lines_b,
         fromdesc="Original Document",
@@ -21,240 +17,772 @@ def generate_text_diff(lines_a, lines_b):
         context=False
     )
 
+    # Remove HtmlDiff navigation cells such as:
+    # f = first difference
+    # n = next difference
+    # t = top
+    diff_table = re.sub(
+        r'<td\s+class="diff_next"[^>]*>.*?</td>',
+        '',
+        diff_table,
+        flags=re.DOTALL
+    )
 
-# ============================================================
-# DATE DETECTION
-# ============================================================
+    diff_table = re.sub(
+        r'<th\s+class="diff_next"[^>]*>.*?</th>',
+        '',
+        diff_table,
+        flags=re.DOTALL
+    )
 
-DATE_PATTERNS = [
-
-    # June 1, 2026
-    r"\b(?:January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
-
-    # 1 June 2026
-    r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|"
-    r"August|September|October|November|December)\s+\d{4}\b",
-
-    # 2026-06-01
-    r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b",
-
-    # 06/01/2026
-    r"\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b"
-]
+    return diff_table
 
 
-def extract_dates(text):
+def _normalise(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return bool(value)
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    return str(value).strip()
+
+
+def _get_paragraphs(meta):
     """
-    Extract recognizable date references from text.
+    Return paragraph formatting records.
+
+    Supports several possible extractor field names.
     """
 
-    dates = []
+    for key in (
+        "paragraphs",
+        "paragraph_formatting",
+        "paragraph_metadata"
+    ):
 
-    for pattern in DATE_PATTERNS:
+        value = meta.get(key)
 
-        matches = re.findall(
-            pattern,
-            text,
-            flags=re.IGNORECASE
+        if isinstance(value, list):
+            return value
+
+    return []
+
+
+def _get_runs(paragraph):
+    """
+    Return run-level formatting records.
+    """
+
+    if not isinstance(paragraph, dict):
+        return []
+
+    for key in (
+        "runs",
+        "run_formatting",
+        "run_metadata"
+    ):
+
+        value = paragraph.get(key)
+
+        if isinstance(value, list):
+            return value
+
+    return []
+
+
+def _run_signature(run):
+    """
+    Extract formatting properties from a run.
+    """
+
+    if not isinstance(run, dict):
+        return {}
+
+    return {
+        "font_name": _normalise(
+            run.get(
+                "font_name",
+                run.get("font")
+            )
+        ),
+
+        "font_size": _normalise(
+            run.get(
+                "font_size",
+                run.get("size")
+            )
+        ),
+
+        "bold": _normalise(
+            run.get("bold")
+        ),
+
+        "italic": _normalise(
+            run.get("italic")
+        ),
+
+        "underline": _normalise(
+            run.get("underline")
+        ),
+
+        "strike": _normalise(
+            run.get(
+                "strike",
+                run.get("strikethrough")
+            )
+        ),
+
+        "color": _normalise(
+            run.get(
+                "color",
+                run.get("font_color")
+            )
+        ),
+
+        "highlight": _normalise(
+            run.get("highlight")
         )
-
-        for match in matches:
-
-            if match not in dates:
-                dates.append(match)
-
-    return dates
+    }
 
 
-# ============================================================
-# GRAMMAR DETECTION
-# ============================================================
-
-# Common grammatical corrections.
-# These are deliberately conservative so that ordinary
-# contractual number/value changes are not classified as grammar.
-
-GRAMMAR_PAIRS = {
-    "agree": {"agrees"},
-    "agrees": {"agree"},
-
-    "is": {"are"},
-    "are": {"is"},
-
-    "was": {"were"},
-    "were": {"was"},
-
-    "has": {"have"},
-    "have": {"has"},
-
-    "does": {"do"},
-    "do": {"does"},
-
-    "this": {"these"},
-    "these": {"this"},
-
-    "that": {"those"},
-    "those": {"that"},
-
-    "its": {"their"},
-    "their": {"its"},
-
-    "a": {"an"},
-    "an": {"a"}
-}
-
-
-def _tokenize_words(text):
+def _paragraph_signature(paragraph):
     """
-    Convert text into word tokens while preserving
-    simple contractions and hyphenated words.
+    Extract paragraph-level formatting properties.
     """
 
-    return re.findall(
-        r"\b[\w'-]+\b",
-        text.lower()
-    )
+    if not isinstance(paragraph, dict):
+        return {}
 
-
-def _grammar_token_change(original, modified):
-    """
-    Check whether a sentence contains a small grammatical
-    correction.
-
-    Example:
-
-        The Consultant agree to...
-        The Consultant agrees to...
-
-    Only one token changed:
-
-        agree -> agrees
-
-    Therefore this is classified as Grammar.
-    """
-
-    original_words = _tokenize_words(original)
-    modified_words = _tokenize_words(modified)
-
-    if not original_words or not modified_words:
-        return False
-
-    matcher = difflib.SequenceMatcher(
-        None,
-        original_words,
-        modified_words
-    )
-
-    replacements = []
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-
-        if tag == "equal":
-            continue
-
-        # We only want very small grammatical replacements.
-        if tag == "replace":
-
-            old_words = original_words[i1:i2]
-            new_words = modified_words[j1:j2]
-
-            replacements.append(
-                (old_words, new_words)
+    return {
+        "alignment": _normalise(
+            paragraph.get(
+                "alignment",
+                paragraph.get("paragraph_alignment")
             )
+        ),
 
-        else:
-            # Insertions/deletions can be grammatical, but
-            # we keep the local detector conservative.
-            return False
+        "font_name": _normalise(
+            paragraph.get("font_name")
+        ),
 
-    # Exactly one small replacement
-    if len(replacements) != 1:
-        return False
+        "font_size": _normalise(
+            paragraph.get("font_size")
+        ),
 
-    old_words, new_words = replacements[0]
+        "bold": _normalise(
+            paragraph.get("bold")
+        ),
 
-    # --------------------------------------------------------
-    # Single-word grammar correction
-    # --------------------------------------------------------
+        "italic": _normalise(
+            paragraph.get("italic")
+        ),
 
-    if len(old_words) == 1 and len(new_words) == 1:
+        "underline": _normalise(
+            paragraph.get("underline")
+        ),
 
-        old_word = old_words[0]
-        new_word = new_words[0]
+        "highlight": _normalise(
+            paragraph.get("highlight")
+        )
+    }
 
-        if (
-            old_word in GRAMMAR_PAIRS
-            and
-            new_word in GRAMMAR_PAIRS[old_word]
-        ):
-            return True
 
-        # Simple subject-verb agreement patterns
-        if (
-            len(old_word) >= 3
-            and
-            len(new_word) >= 3
-            and
-            (
-                old_word + "s" == new_word
-                or
-                new_word + "s" == old_word
-            )
-        ):
-            return True
+def _append_change(
+    changes,
+    paragraph_index,
+    description,
+    original,
+    modified
+):
 
-    # --------------------------------------------------------
-    # Two-word grammar correction
-    # --------------------------------------------------------
+    changes.append({
 
-    if len(old_words) <= 2 and len(new_words) <= 2:
+        "category":
+            "Formatting",
 
-        for old_word in old_words:
+        "description":
+            description,
 
-            for new_word in new_words:
+        "severity":
+            "Low",
 
-                if (
-                    old_word in GRAMMAR_PAIRS
-                    and
-                    new_word in GRAMMAR_PAIRS[old_word]
-                ):
-                    return True
+        "section":
+            f"Paragraph {paragraph_index + 1}",
 
-    # --------------------------------------------------------
-    # Punctuation correction
-    # --------------------------------------------------------
+        "originalText":
+            str(original),
 
-    original_without_punctuation = re.sub(
-        r"[^\w\s]",
-        "",
-        original.lower()
+        "modifiedText":
+            str(modified)
+    })
+
+
+def compare_formatting(meta_a, meta_b):
+    """
+    Compare document-level and DOCX run-level formatting.
+    """
+
+    differences = []
+
+    # =========================================================
+    # DOCUMENT STRUCTURE
+    # =========================================================
+
+    pages_a = meta_a.get("pages_count")
+    pages_b = meta_b.get("pages_count")
+
+    if (
+        pages_a is not None
+        and pages_b is not None
+        and pages_a != pages_b
+    ):
+
+        differences.append({
+
+            "category":
+                "Formatting",
+
+            "description":
+                f"Document length changed from "
+                f"{pages_a} pages to {pages_b} pages.",
+
+            "severity":
+                "Low"
+        })
+
+
+    paras_a_count = meta_a.get(
+        "paragraphs_count"
     )
 
-    modified_without_punctuation = re.sub(
-        r"[^\w\s]",
-        "",
-        modified.lower()
+    paras_b_count = meta_b.get(
+        "paragraphs_count"
     )
 
     if (
-        original_without_punctuation
-        ==
-        modified_without_punctuation
+        paras_a_count is not None
+        and paras_b_count is not None
+        and paras_a_count != paras_b_count
     ):
-        return True
 
-    return False
+        differences.append({
+
+            "category":
+                "Formatting",
+
+            "description":
+                f"Total paragraphs changed from "
+                f"{paras_a_count} to {paras_b_count}.",
+
+            "severity":
+                "Low"
+        })
 
 
-# ============================================================
-# TEXTUAL / GRAMMAR / DATE CHANGES
-# ============================================================
+    # =========================================================
+    # FONT SETS
+    # =========================================================
+
+    fonts_a = set(
+        meta_a.get(
+            "fonts_detected",
+            []
+        )
+    )
+
+    fonts_b = set(
+        meta_b.get(
+            "fonts_detected",
+            []
+        )
+    )
+
+    if fonts_a or fonts_b:
+
+        added_fonts = fonts_b - fonts_a
+        removed_fonts = fonts_a - fonts_b
+
+        if added_fonts:
+
+            differences.append({
+
+                "category":
+                    "Formatting",
+
+                "description":
+                    "New fonts/styles introduced: "
+                    + ", ".join(
+                        sorted(
+                            map(
+                                str,
+                                added_fonts
+                            )
+                        )
+                    )
+                    + ".",
+
+                "severity":
+                    "Low"
+            })
+
+        if removed_fonts:
+
+            differences.append({
+
+                "category":
+                    "Formatting",
+
+                "description":
+                    "Fonts/styles removed: "
+                    + ", ".join(
+                        sorted(
+                            map(
+                                str,
+                                removed_fonts
+                            )
+                        )
+                    )
+                    + ".",
+
+                "severity":
+                    "Low"
+            })
+
+
+    # =========================================================
+    # DOCUMENT STYLE SETS
+    # =========================================================
+
+    styles_a = set(
+        meta_a.get(
+            "styles_detected",
+            []
+        )
+    )
+
+    styles_b = set(
+        meta_b.get(
+            "styles_detected",
+            []
+        )
+    )
+
+    if styles_a or styles_b:
+
+        added_styles = styles_b - styles_a
+        removed_styles = styles_a - styles_b
+
+        if added_styles:
+
+            differences.append({
+
+                "category":
+                    "Formatting",
+
+                "description":
+                    "New document style templates applied: "
+                    + ", ".join(
+                        sorted(
+                            map(
+                                str,
+                                added_styles
+                            )
+                        )
+                    )
+                    + ".",
+
+                "severity":
+                    "Low"
+            })
+
+        if removed_styles:
+
+            differences.append({
+
+                "category":
+                    "Formatting",
+
+                "description":
+                    "Style templates removed: "
+                    + ", ".join(
+                        sorted(
+                            map(
+                                str,
+                                removed_styles
+                            )
+                        )
+                    )
+                    + ".",
+
+                "severity":
+                    "Low"
+            })
+
+
+    # =========================================================
+    # VISUAL / IMAGE COUNT
+    # =========================================================
+
+    image_keys = (
+        "images_count",
+        "image_count",
+        "images",
+        "pictures_count",
+        "visual_elements_count"
+    )
+
+    image_a = None
+    image_b = None
+
+    for key in image_keys:
+
+        if (
+            image_a is None
+            and meta_a.get(key) is not None
+        ):
+            image_a = meta_a.get(key)
+
+        if (
+            image_b is None
+            and meta_b.get(key) is not None
+        ):
+            image_b = meta_b.get(key)
+
+
+    if isinstance(image_a, list):
+        image_a = len(image_a)
+
+    if isinstance(image_b, list):
+        image_b = len(image_b)
+
+
+    if (
+        image_a is not None
+        and image_b is not None
+        and image_a != image_b
+    ):
+
+        differences.append({
+
+            "category":
+                "Visual",
+
+            "description":
+                f"Visual/image elements changed "
+                f"from {image_a} to {image_b}.",
+
+            "severity":
+                "Low"
+        })
+
+
+    # =========================================================
+    # PARAGRAPH-LEVEL FORMATTING
+    # =========================================================
+
+    paragraphs_a = _get_paragraphs(
+        meta_a
+    )
+
+    paragraphs_b = _get_paragraphs(
+        meta_b
+    )
+
+
+    # Some extractor versions may store
+    # runs directly in the metadata.
+
+    if (
+        not paragraphs_a
+        and isinstance(
+            meta_a.get("runs"),
+            list
+        )
+    ):
+
+        paragraphs_a = [
+            {
+                "runs":
+                    meta_a.get(
+                        "runs",
+                        []
+                    )
+            }
+        ]
+
+
+    if (
+        not paragraphs_b
+        and isinstance(
+            meta_b.get("runs"),
+            list
+        )
+    ):
+
+        paragraphs_b = [
+            {
+                "runs":
+                    meta_b.get(
+                        "runs",
+                        []
+                    )
+            }
+        ]
+
+
+    max_paragraphs = max(
+        len(paragraphs_a),
+        len(paragraphs_b)
+    )
+
+
+    formatting_fields = [
+
+        (
+            "font_size",
+            "Font size"
+        ),
+
+        (
+            "font_name",
+            "Font"
+        ),
+
+        (
+            "bold",
+            "Bold"
+        ),
+
+        (
+            "italic",
+            "Italic"
+        ),
+
+        (
+            "underline",
+            "Underline"
+        ),
+
+        (
+            "strike",
+            "Strikethrough"
+        ),
+
+        (
+            "color",
+            "Font color"
+        ),
+
+        (
+            "highlight",
+            "Highlight"
+        ),
+
+        (
+            "alignment",
+            "Alignment"
+        )
+    ]
+
+
+    for paragraph_index in range(
+        max_paragraphs
+    ):
+
+        paragraph_a = (
+            paragraphs_a[
+                paragraph_index
+            ]
+            if paragraph_index
+            < len(paragraphs_a)
+            else {}
+        )
+
+        paragraph_b = (
+            paragraphs_b[
+                paragraph_index
+            ]
+            if paragraph_index
+            < len(paragraphs_b)
+            else {}
+        )
+
+
+        # -----------------------------------------------------
+        # Paragraph-level formatting
+        # -----------------------------------------------------
+
+        sig_a = _paragraph_signature(
+            paragraph_a
+        )
+
+        sig_b = _paragraph_signature(
+            paragraph_b
+        )
+
+
+        for field, label in formatting_fields:
+
+            value_a = sig_a.get(
+                field
+            )
+
+            value_b = sig_b.get(
+                field
+            )
+
+
+            if (
+                value_a is None
+                and value_b is None
+            ):
+                continue
+
+
+            if value_a != value_b:
+
+                _append_change(
+
+                    differences,
+
+                    paragraph_index,
+
+                    f"{label} changed "
+                    f"from {value_a} "
+                    f"to {value_b}.",
+
+                    value_a,
+
+                    value_b
+                )
+
+
+        # -----------------------------------------------------
+        # Run-level formatting
+        # -----------------------------------------------------
+
+        runs_a = _get_runs(
+            paragraph_a
+        )
+
+        runs_b = _get_runs(
+            paragraph_b
+        )
+
+
+        max_runs = max(
+            len(runs_a),
+            len(runs_b)
+        )
+
+
+        for run_index in range(
+            max_runs
+        ):
+
+            run_a = (
+                runs_a[run_index]
+                if run_index
+                < len(runs_a)
+                else {}
+            )
+
+            run_b = (
+                runs_b[run_index]
+                if run_index
+                < len(runs_b)
+                else {}
+            )
+
+
+            run_sig_a = _run_signature(
+                run_a
+            )
+
+            run_sig_b = _run_signature(
+                run_b
+            )
+
+
+            for field, label in formatting_fields:
+
+                value_a = run_sig_a.get(
+                    field
+                )
+
+                value_b = run_sig_b.get(
+                    field
+                )
+
+
+                if (
+                    value_a is None
+                    and value_b is None
+                ):
+                    continue
+
+
+                if value_a != value_b:
+
+                    description = (
+                        f"{label} changed "
+                        f"from {value_a} "
+                        f"to {value_b}."
+                    )
+
+
+                    # Avoid duplicate formatting
+                    # records when the same change
+                    # exists at paragraph and run level.
+
+                    duplicate = any(
+
+                        change.get(
+                            "section"
+                        )
+                        == (
+                            f"Paragraph "
+                            f"{paragraph_index + 1}"
+                        )
+
+                        and
+
+                        change.get(
+                            "description"
+                        )
+                        == description
+
+                        for change
+                        in differences
+                    )
+
+
+                    if not duplicate:
+
+                        _append_change(
+
+                            differences,
+
+                            paragraph_index,
+
+                            description,
+
+                            value_a,
+
+                            value_b
+                        )
+
+
+    return differences
+
 
 def get_textual_changes(lines_a, lines_b):
     """
-    Compare document lines and classify detected changes
-    as Textual, Grammar, or Dates.
+    Compare the textual content of both documents.
     """
 
     changes = []
@@ -265,11 +793,12 @@ def get_textual_changes(lines_a, lines_b):
         lines_b
     )
 
+
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
 
-        # ====================================================
-        # REPLACEMENT
-        # ====================================================
+        # =====================================================
+        # REPLACE
+        # =====================================================
 
         if tag == "replace":
 
@@ -278,154 +807,79 @@ def get_textual_changes(lines_a, lines_b):
                 j2 - j1
             )
 
-            for idx in range(max_range):
+
+            for idx in range(
+                max_range
+            ):
 
                 orig_idx = i1 + idx
                 mod_idx = j1 + idx
 
-                original_text = (
+
+                orig_line = (
                     lines_a[orig_idx]
                     if orig_idx < i2
                     else ""
                 )
 
-                modified_text = (
+
+                mod_line = (
                     lines_b[mod_idx]
                     if mod_idx < j2
                     else ""
                 )
 
+
                 if (
-                    not original_text.strip()
+                    not orig_line.strip()
                     and
-                    not modified_text.strip()
+                    not mod_line.strip()
                 ):
                     continue
 
-                # ------------------------------------------------
-                # Default classification
-                # ------------------------------------------------
-
-                category = "Textual"
-                description = "Clause text modified."
-                severity = "Medium"
-
-                # =================================================
-                # DATE CHANGE
-                # =================================================
-
-                original_dates = extract_dates(
-                    original_text
-                )
-
-                modified_dates = extract_dates(
-                    modified_text
-                )
-
-                if (
-                    original_dates
-                    or
-                    modified_dates
-                ) and (
-                    original_dates
-                    !=
-                    modified_dates
-                ):
-
-                    category = "Dates"
-
-                    description = (
-                        "Date reference changed from "
-                        f"{', '.join(original_dates) or 'none'} "
-                        "to "
-                        f"{', '.join(modified_dates) or 'none'}."
-                    )
-
-                    severity = "Medium"
-
-                # =================================================
-                # GRAMMAR CHANGE
-                # =================================================
-
-                elif _grammar_token_change(
-                    original_text,
-                    modified_text
-                ):
-
-                    category = "Grammar"
-
-                    description = (
-                        "Grammar or language correction detected."
-                    )
-
-                    severity = "Low"
-
-                # =================================================
-                # CONTRACTUAL NUMBER / VALUE CHANGE
-                # =================================================
-
-                elif (
-                    re.search(
-                        r"\b\d+\b",
-                        original_text
-                    )
-                    and
-                    re.search(
-                        r"\b\d+\b",
-                        modified_text
-                    )
-                ):
-
-                    category = "Textual"
-
-                    description = (
-                        "Contract value or term modified."
-                    )
-
-                    severity = "High"
-
-                # =================================================
-                # STORE CHANGE
-                # =================================================
 
                 changes.append({
 
                     "category":
-                        category,
+                        "Textual",
 
                     "description":
-                        description,
+                        "Clause text modified.",
 
                     "severity":
-                        severity,
+                        "Medium",
 
-                    "section":
-                        (
-                            f"Line {orig_idx + 1}"
-                            if orig_idx < i2
-                            else
-                            f"Line {i1 + 1}"
-                        ),
+                    "section": (
+                        f"Line {orig_idx + 1}"
+                        if orig_idx < i2
+                        else f"Line {i1 + 1}"
+                    ),
 
                     "originalText":
-                        original_text,
+                        orig_line,
 
                     "modifiedText":
-                        modified_text
+                        mod_line
                 })
 
-        # ====================================================
-        # DELETION
-        # ====================================================
+
+        # =====================================================
+        # DELETE
+        # =====================================================
 
         elif tag == "delete":
 
-            for idx in range(i1, i2):
+            for idx in range(
+                i1,
+                i2
+            ):
 
-                original_text = lines_a[idx]
+                orig_line = lines_a[idx]
 
-                if not original_text.strip():
+
+                if not orig_line.strip():
                     continue
+
 
                 changes.append({
 
@@ -442,24 +896,30 @@ def get_textual_changes(lines_a, lines_b):
                         f"Line {idx + 1}",
 
                     "originalText":
-                        original_text,
+                        orig_line,
 
                     "modifiedText":
                         ""
                 })
 
-        # ====================================================
-        # INSERTION
-        # ====================================================
+
+        # =====================================================
+        # INSERT
+        # =====================================================
 
         elif tag == "insert":
 
-            for idx in range(j1, j2):
+            for idx in range(
+                j1,
+                j2
+            ):
 
-                modified_text = lines_b[idx]
+                mod_line = lines_b[idx]
 
-                if not modified_text.strip():
+
+                if not mod_line.strip():
                     continue
+
 
                 changes.append({
 
@@ -479,514 +939,8 @@ def get_textual_changes(lines_a, lines_b):
                         "",
 
                     "modifiedText":
-                        modified_text
+                        mod_line
                 })
 
-    # ========================================================
-    # ADD UNIQUE IDs
-    # ========================================================
-
-    for index, change in enumerate(changes):
-
-        change["id"] = (
-            f"local-change-{index + 1}"
-        )
 
     return changes
-
-
-# ============================================================
-# FORMATTING COMPARISON
-# ============================================================
-
-def compare_formatting(meta_a, meta_b):
-
-    differences = []
-
-    # ========================================================
-    # PARAGRAPH COUNT
-    # ========================================================
-
-    paragraphs_a = meta_a.get(
-        "paragraphs_count"
-    )
-
-    paragraphs_b = meta_b.get(
-        "paragraphs_count"
-    )
-
-    if (
-        paragraphs_a is not None
-        and
-        paragraphs_b is not None
-        and
-        paragraphs_a != paragraphs_b
-    ):
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "Paragraph count changed from "
-                    f"{paragraphs_a} to {paragraphs_b}."
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Document Structure",
-
-            "originalText":
-                str(paragraphs_a),
-
-            "modifiedText":
-                str(paragraphs_b)
-        })
-
-    # ========================================================
-    # PAGE COUNT
-    # ========================================================
-
-    pages_a = meta_a.get(
-        "pages_count"
-    )
-
-    pages_b = meta_b.get(
-        "pages_count"
-    )
-
-    if (
-        pages_a is not None
-        and
-        pages_b is not None
-        and
-        pages_a != pages_b
-    ):
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "Page count changed from "
-                    f"{pages_a} to {pages_b}."
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Document Layout",
-
-            "originalText":
-                str(pages_a),
-
-            "modifiedText":
-                str(pages_b)
-        })
-
-    # ========================================================
-    # FONT FAMILIES
-    # ========================================================
-
-    fonts_a = set(
-        meta_a.get(
-            "fonts_detected",
-            []
-        )
-    )
-
-    fonts_b = set(
-        meta_b.get(
-            "fonts_detected",
-            []
-        )
-    )
-
-    added_fonts = fonts_b - fonts_a
-    removed_fonts = fonts_a - fonts_b
-
-    if added_fonts:
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "New font(s) detected: "
-                    +
-                    ", ".join(
-                        sorted(added_fonts)
-                    )
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Font",
-
-            "originalText":
-                "",
-
-            "modifiedText":
-                ", ".join(
-                    sorted(added_fonts)
-                )
-        })
-
-    if removed_fonts:
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "Font(s) removed: "
-                    +
-                    ", ".join(
-                        sorted(removed_fonts)
-                    )
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Font",
-
-            "originalText":
-                ", ".join(
-                    sorted(removed_fonts)
-                ),
-
-            "modifiedText":
-                ""
-        })
-
-    # ========================================================
-    # PARAGRAPH STYLES
-    # ========================================================
-
-    styles_a = set(
-        meta_a.get(
-            "styles_detected",
-            []
-        )
-    )
-
-    styles_b = set(
-        meta_b.get(
-            "styles_detected",
-            []
-        )
-    )
-
-    added_styles = styles_b - styles_a
-    removed_styles = styles_a - styles_b
-
-    if added_styles:
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "New paragraph style(s) detected: "
-                    +
-                    ", ".join(
-                        sorted(added_styles)
-                    )
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Paragraph Style",
-
-            "originalText":
-                "",
-
-            "modifiedText":
-                ", ".join(
-                    sorted(added_styles)
-                )
-        })
-
-    if removed_styles:
-
-        differences.append({
-
-            "category":
-                "Formatting",
-
-            "description":
-                (
-                    "Paragraph style(s) removed: "
-                    +
-                    ", ".join(
-                        sorted(removed_styles)
-                    )
-                ),
-
-            "severity":
-                "Low",
-
-            "section":
-                "Paragraph Style",
-
-            "originalText":
-                ", ".join(
-                    sorted(removed_styles)
-                ),
-
-            "modifiedText":
-                ""
-        })
-
-    # ========================================================
-    # RUN-LEVEL FORMATTING
-    # ========================================================
-
-    runs_a = meta_a.get(
-        "runs",
-        []
-    )
-
-    runs_b = meta_b.get(
-        "runs",
-        []
-    )
-
-    max_runs = max(
-        len(runs_a),
-        len(runs_b)
-    )
-
-    for index in range(max_runs):
-
-        run_a = (
-            runs_a[index]
-            if index < len(runs_a)
-            else None
-        )
-
-        run_b = (
-            runs_b[index]
-            if index < len(runs_b)
-            else None
-        )
-
-        if not run_a or not run_b:
-            continue
-
-        formatting_properties = [
-
-            (
-                "font_name",
-                "font"
-            ),
-
-            (
-                "font_size",
-                "font size"
-            ),
-
-            (
-                "bold",
-                "bold"
-            ),
-
-            (
-                "italic",
-                "italic"
-            ),
-
-            (
-                "underline",
-                "underline"
-            ),
-
-            (
-                "strike",
-                "strikethrough"
-            ),
-
-            (
-                "color",
-                "font color"
-            ),
-
-            (
-                "highlight",
-                "highlight"
-            )
-        ]
-
-        for property_name, display_name in (
-            formatting_properties
-        ):
-
-            value_a = run_a.get(
-                property_name
-            )
-
-            value_b = run_b.get(
-                property_name
-            )
-
-            if value_a == value_b:
-                continue
-
-            if (
-                value_a is None
-                and
-                value_b is None
-            ):
-                continue
-
-            original_display = (
-                str(value_a)
-                if value_a is not None
-                else
-                "default"
-            )
-
-            modified_display = (
-                str(value_b)
-                if value_b is not None
-                else
-                "default"
-            )
-
-            differences.append({
-
-                "category":
-                    "Formatting",
-
-                "description":
-                    (
-                        f"{display_name.capitalize()} "
-                        f"changed from "
-                        f"{original_display} "
-                        f"to "
-                        f"{modified_display}."
-                    ),
-
-                "severity":
-                    "Low",
-
-                "section":
-                    (
-                        "Paragraph "
-                        +
-                        str(
-                            run_a.get(
-                                "paragraph_index",
-                                0
-                            ) + 1
-                        )
-                    ),
-
-                "originalText":
-                    original_display,
-
-                "modifiedText":
-                    modified_display
-            })
-
-    # ========================================================
-    # VISUAL / IMAGE COUNT
-    # ========================================================
-
-    images_a = meta_a.get(
-        "images_count",
-        0
-    )
-
-    images_b = meta_b.get(
-        "images_count",
-        0
-    )
-
-    if images_a != images_b:
-
-        differences.append({
-
-            "category":
-                "Visual",
-
-            "description":
-                (
-                    "Embedded image count changed "
-                    f"from {images_a} to {images_b}."
-                ),
-
-            "severity":
-                "Medium",
-
-            "section":
-                "Visual Elements",
-
-            "originalText":
-                str(images_a),
-
-            "modifiedText":
-                str(images_b)
-        })
-
-    # ========================================================
-    # REMOVE DUPLICATES
-    # ========================================================
-
-    unique = []
-    seen = set()
-
-    for difference in differences:
-
-        key = (
-
-            difference["category"],
-
-            difference["description"],
-
-            difference["section"],
-
-            difference["originalText"],
-
-            difference["modifiedText"]
-        )
-
-        if key not in seen:
-
-            seen.add(key)
-            unique.append(
-                difference
-            )
-
-    # ========================================================
-    # IDS
-    # ========================================================
-
-    for index, difference in enumerate(
-        unique
-    ):
-
-        difference["id"] = (
-            f"local-format-{index + 1}"
-        )
-
-    return unique

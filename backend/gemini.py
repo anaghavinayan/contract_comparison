@@ -1,180 +1,223 @@
 import os
 import json
+import re
 import time
-import google.generativeai as genai
 
-def compare_with_ai(path_a, path_b, text_a, text_b):
-    """
-    Main function to run AI comparative analysis. Decides whether to use fast text-based
-    prompting or multimodal upload-based comparison based on file types.
-    
-    :param path_a: Path to original file
-    :param path_b: Path to modified file
-    :param text_a: Extracted text of original file (may be empty for scanned documents)
-    :param text_b: Extracted text of modified file (may be empty for scanned documents)
-    :return: Dictionary containing 'summary' and 'changes' lists
-    """
+from google import genai
+
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-3.8-flash"
+MAX_RETRIES = 3
+RETRY_DELAYS = [2, 5, 10]
+
+
+def _get_client():
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is missing in backend.")
-        
-    genai.configure(api_key=api_key)
-    
-    # Detect if we need to do multimodal comparison
-    ext_a = os.path.splitext(path_a)[1].lower()
-    ext_b = os.path.splitext(path_b)[1].lower()
-    
-    is_image_a = ext_a in ['.jpg', '.jpeg', '.png']
-    is_image_b = ext_b in ['.jpg', '.jpeg', '.png']
-    
-    # If it has no text, it's probably scanned PDF
-    is_scanned_a = ext_a == '.pdf' and len(text_a.strip()) < 50
-    is_scanned_b = ext_b == '.pdf' and len(text_b.strip()) < 50
-    
-    multimodal_required = is_image_a or is_image_b or is_scanned_a or is_scanned_b
-    
-    if multimodal_required:
-        return _compare_multimodal(path_a, path_b)
-    else:
-        return _compare_text_only(text_a, text_b)
+        raise ValueError("GEMINI_API_KEY environment variable is missing.")
+    return genai.Client(api_key=api_key)
 
-def _compare_text_only(text_a, text_b):
-    """Executes comparison using text-only inputs for fast response times."""
-    prompt = f"""
-You are an expert legal counsel and contract auditor. Compare the following two contracts in detail.
-Original Contract (Document A):
-\"\"\"
-{text_a}
-\"\"\"
 
-Modified Contract (Document B):
-\"\"\"
-{text_b}
-\"\"\"
+def _parse_json_response(text):
+    if not text:
+        raise ValueError("Gemini returned an empty response.")
+    text = text.strip()
+    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise ValueError("Gemini returned a response that could not be parsed as JSON.")
 
-Perform a rigorous audit comparing Document A to Document B. Identify:
-1. Textual changes: missing characters, words, sentences, or added/removed clauses.
-2. Grammar changes: syntax corrections, spelling modifications.
-3. Formatting changes: font style/size modifications, paragraph alignment, header adjustments (where text indicates layouts).
-4. Date references: deadlines, milestones, start/end dates.
 
-For each change, assign:
-- Category: "Textual" | "Grammar" | "Formatting" | "Dates"
-- Severity: "High" (impacts liabilities, payment terms, termination, indemnity, IP), "Medium" (operational shifts, notice timelines, minor definitions), "Low" (grammar, formatting, typos)
+def _is_retryable_error(error):
+    message = str(error).lower()
+    return any(word in message for word in [
+        "503", "unavailable", "service unavailable", "high demand",
+        "overloaded", "429", "resource exhausted", "rate limit",
+        "500", "502", "504", "internal server error",
+        "deadline exceeded", "temporarily"
+    ])
 
-You MUST return your response in a strict JSON format matching the following structure:
+
+def _generate_with_retry(client, models, contents):
+    last_error = None
+
+    for model in models:
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                print(f"[GEMINI] Trying {model} (attempt {attempt + 1}/{MAX_RETRIES + 1})...")
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config={"response_mime_type": "application/json"}
+                )
+                print(f"[GEMINI] {model} succeeded.")
+                return response
+            except Exception as error:
+                last_error = error
+                if not _is_retryable_error(error):
+                    raise
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_DELAYS[attempt]
+                    print(f"[GEMINI] Temporary error from {model}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"[GEMINI] {model} failed after {MAX_RETRIES + 1} attempts.")
+
+    raise last_error
+
+
+def _text_prompt(text_a, text_b):
+    return f"""
+You are an expert contract comparison assistant.
+
+Compare the ORIGINAL contract and the MODIFIED contract carefully.
+
+Identify meaningful differences in:
+1. TEXTUAL: added, removed, or changed wording, clauses, numbers,
+   obligations, rights, payment terms, notice periods, penalties, etc.
+2. GRAMMAR: grammar, spelling, punctuation, wording, sentence structure.
+3. DATES: changed dates, deadlines, commencement, expiry, notice or payment dates.
+4. FORMATTING: formatting differences that can be determined from the content.
+5. VISUAL: meaningful visual elements when available.
+
+Focus especially on changes affecting legal or contractual meaning.
+
+Return ONLY valid JSON:
 {{
-  "summary": {{
-    "totalChanges": number,
-    "textualChanges": number,
-    "grammarChanges": number,
-    "formattingChanges": number,
-    "visualChanges": 0,
-    "dateChanges": number,
-    "severityHigh": number,
-    "severityMedium": number,
-    "severityLow": number,
-    "verdict": "Provide a detailed executive verdict of the modifications and contract risks."
-  }},
+  "executive_summary": "Short overall assessment",
+  "overall_severity": "Low|Medium|High|Critical",
   "changes": [
     {{
-      "id": "change-unique-id",
-      "category": "Textual" | "Grammar" | "Formatting" | "Dates",
-      "severity": "High" | "Medium" | "Low",
-      "section": "Name of section / paragraph heading",
-      "description": "Clear explanation of the change",
-      "originalText": "Matching text snippet from Document A (blank if new)",
-      "modifiedText": "Matching text snippet from Document B (blank if deleted)"
+      "category": "Textual|Grammar|Formatting|Dates|Visual",
+      "severity": "Low|Medium|High|Critical",
+      "location": "Clause or section",
+      "original": "Original wording or value",
+      "modified": "Modified wording or value",
+      "description": "What changed and why it matters",
+      "impact": "Legal or contractual impact"
     }}
   ]
 }}
-Do NOT include markdown wrapping (like ```json). Output raw JSON only.
+
+Do not invent differences or report unchanged content.
+
+ORIGINAL CONTRACT:
+{text_a}
+
+MODIFIED CONTRACT:
+{text_b}
 """
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
-    return json.loads(response.text)
 
-def _compare_multimodal(path_a, path_b):
-    """Uploads documents to Gemini Files API to do multimodal OCR, layout, and visual analysis."""
-    uploaded_files = []
-    try:
-        # Upload file A
-        file_a_ref = genai.upload_file(path=path_a)
-        uploaded_files.append(file_a_ref)
-        
-        # Upload file B
-        file_b_ref = genai.upload_file(path=path_b)
-        uploaded_files.append(file_b_ref)
-        
-        # Wait briefly for files to process in Google backend if they are large PDFs
-        # For small images/PDFs, processing is almost instantaneous.
-        for f in uploaded_files:
-            while f.state.name == "PROCESSING":
-                time.sleep(1)
-                f = genai.get_file(f.name)
-            if f.state.name == "FAILED":
-                raise ValueError(f"Failed to process file {f.display_name} in Gemini API.")
-                
-        prompt_instruction = """
-You are an expert contract comparison AI. Analyze the two uploaded files in detail. 
-The first file is Document A (Original Contract). The second file is Document B (Modified Contract).
 
-Perform OCR and visual analysis on both files to identify all differences. Inspect:
-1. Textual changes (words, sentences, clauses).
-2. Grammar and syntax modifications.
-3. Formatting changes (font style, size, alignment, margins).
-4. Date references (deadlines, term milestones, effective dates).
-5. Visual elements (signatures, stamps, seals, hand-drawn marks, highlights).
+def _multimodal_prompt():
+    return """
+You are an expert contract comparison assistant performing a detailed multimodal comparison of TWO uploaded contract documents.
 
-For each difference:
-- Category: "Textual" | "Grammar" | "Formatting" | "Visual" | "Dates"
-- Severity: "High" | "Medium" | "Low"
+The first file is the ORIGINAL contract.
+The second file is the MODIFIED contract.
 
-You MUST return your response in a strict JSON format matching this structure:
+Inspect both document content and visual appearance.
+
+Identify meaningful differences in:
+1. TEXTUAL: added, removed, or changed words, phrases, sentences, clauses,
+   numbers, obligations, rights, payment terms, notice periods, penalties, etc.
+2. GRAMMAR: grammar, spelling, punctuation, wording and sentence structure.
+3. DATES: every changed date, deadline, commencement, expiry, notice or payment date.
+4. FORMATTING: font size/style, bold/italic/underline, alignment, spacing,
+   headings, tables, layout, highlighting and other visible formatting.
+5. VISUAL: signatures, seals, stamps, logos, initials, handwritten marks,
+   highlighting, images and other meaningful visual elements.
+
+OCR REQUIREMENT:
+These may be scanned/image-only documents. Read visible text using OCR and compare it.
+Do not treat a scanned document as empty just because normal text extraction returns little or no text.
+
+Pay special attention to dates, monetary amounts, percentages, payment periods,
+notice periods, termination, obligations, rights, liability, confidentiality,
+governing law, signatures and approval marks.
+
+Return ONLY valid JSON:
 {
-  "summary": {
-    "totalChanges": number,
-    "textualChanges": number,
-    "grammarChanges": number,
-    "formattingChanges": number,
-    "visualChanges": number,
-    "dateChanges": number,
-    "severityHigh": number,
-    "severityMedium": number,
-    "severityLow": number,
-    "verdict": "Provide an audit verdict summarizing the differences, missing visual items like signatures, and overall legal impacts."
-  },
+  "executive_summary": "Short overall assessment",
+  "overall_severity": "Low|Medium|High|Critical",
   "changes": [
     {
-      "id": "change-unique-id",
-      "category": "Textual" | "Grammar" | "Formatting" | "Visual" | "Dates",
-      "severity": "High" | "Medium" | "Low",
-      "section": "Section name/page location",
-      "description": "Explanation of change",
-      "originalText": "Text in original Document A (or visual status)",
-      "modifiedText": "Text in modified Document B (or visual status)"
+      "category": "Textual|Grammar|Formatting|Dates|Visual",
+      "severity": "Low|Medium|High|Critical",
+      "location": "Clause, section, page, or visual location",
+      "original": "Original wording/value/visual description",
+      "modified": "Modified wording/value/visual description",
+      "description": "What changed and why it matters",
+      "impact": "Legal or contractual impact"
     }
   ]
 }
-Do NOT include markdown wrapping. Output raw JSON only.
+
+Do not invent differences. If a visual difference cannot be read exactly,
+describe it rather than inventing wording. If there are no meaningful differences,
+return an empty changes array.
 """
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content([
-            "Compare the two uploaded files.",
-            file_a_ref,
-            file_b_ref,
-            prompt_instruction
-        ], generation_config={"response_mime_type": "application/json"})
-        
-        return json.loads(response.text)
-        
+
+
+def _compare_text_only(text_a, text_b):
+    client = _get_client()
+    response = _generate_with_retry(
+        client,
+        [PRIMARY_MODEL, FALLBACK_MODEL],
+        _text_prompt(text_a or "", text_b or "")
+    )
+    return _parse_json_response(response.text)
+
+
+def _compare_multimodal(path_a, path_b):
+    client = _get_client()
+    file_a = None
+    file_b = None
+
+    try:
+        print("[GEMINI] Uploading files for multimodal/OCR analysis...")
+        file_a = client.files.upload(file=path_a)
+        file_b = client.files.upload(file=path_b)
+        print("[GEMINI] Files uploaded. Starting OCR/visual comparison...")
+
+        response = _generate_with_retry(
+            client,
+            [PRIMARY_MODEL, FALLBACK_MODEL],
+            [file_a, file_b, _multimodal_prompt()]
+        )
+        return _parse_json_response(response.text)
+
     finally:
-        # Clean up files from Gemini API storage immediately to preserve privacy
-        for f in uploaded_files:
-            try:
-                genai.delete_file(f.name)
-            except Exception:
-                pass
+        for uploaded_file in (file_a, file_b):
+            if uploaded_file is not None:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                    print(f"[GEMINI] Deleted uploaded file: {uploaded_file.name}")
+                except Exception as cleanup_error:
+                    print(f"[GEMINI] Could not delete uploaded file: {cleanup_error}")
+
+
+def compare_with_ai(path_a, path_b, text_a, text_b):
+    ext_a = os.path.splitext(path_a)[1].lower()
+    ext_b = os.path.splitext(path_b)[1].lower()
+
+    image_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+
+    is_image_a = ext_a in image_extensions
+    is_image_b = ext_b in image_extensions
+    is_scanned_a = ext_a == ".pdf" and len((text_a or "").strip()) < 50
+    is_scanned_b = ext_b == ".pdf" and len((text_b or "").strip()) < 50
+
+    if is_image_a or is_image_b or is_scanned_a or is_scanned_b:
+        print("[GEMINI] Multimodal/OCR analysis required.")
+        return _compare_multimodal(path_a, path_b)
+
+    print("[GEMINI] Text-based contract analysis required.")
+    return _compare_text_only(text_a or "", text_b or "")
